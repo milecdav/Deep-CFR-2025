@@ -3,7 +3,7 @@
 #SBATCH --output=slurm_out/deep-cfr-flop5-cpu-%j.out
 #SBATCH --error=slurm_out/deep-cfr-flop5-cpu-%j.err
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=24
+#SBATCH --cpus-per-task=48
 #SBATCH --mem=128G
 #SBATCH --time=72:00:00
 #SBATCH --partition=amdlong

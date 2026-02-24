@@ -36,7 +36,7 @@ if __name__ == '__main__':
                                          eval_agent_export_freq=1,  # produces around 15GB over 150 iterations!
 
                                          n_actions_traverser_samples=3,  # = external sampling in FHP
-                                         n_traversals_per_iter=15000,
+                                         n_traversals_per_iter=300000,
                                          n_batches_adv_training=4000,
                                          mini_batch_size_adv=10240,  # *20=10240
                                          init_adv_model="random",
@@ -76,7 +76,7 @@ if __name__ == '__main__':
                                          lbr_args=LBRArgs(
                                              n_lbr_hands_per_seat=300000,
                                              lbr_check_to_round=Poker.FLOP,  # Check/call until FLOP
-                                             n_parallel_lbr_workers=1,  # Local mode, so 1 worker
+                                             n_parallel_lbr_workers=args.n_workers,
                                              use_gpu_for_batch_eval=True,
                                              DISTRIBUTED=False,
                                          ),
