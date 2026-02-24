@@ -6,10 +6,14 @@ from DeepCFR.TrainingProfile import TrainingProfile
 from DeepCFR.workers.driver.Driver import Driver
 
 if __name__ == '__main__':
+    import os
     parser = argparse.ArgumentParser()
     parser.add_argument("--device-training", default="auto")
     parser.add_argument("--device-parameter-server", default="auto")
     parser.add_argument("--device-inference", default="auto")
+    parser.add_argument("--n-workers", type=int,
+                        default=max(1, (len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count() or 1) - 2),
+                        help="Number of parallel LearnerActor subprocesses")
     args = parser.parse_args()
 
     ctrl = Driver(t_prof=TrainingProfile(name="SD-CFR_LEDUC_EXAMPLE",
@@ -38,7 +42,7 @@ if __name__ == '__main__':
                                              EvalAgentDeepCFR.EVAL_MODE_AVRG_NET,  # Deep CFR
                                          ),
 
-                                         DISTRIBUTED=False,
+                                         n_workers=args.n_workers,
                                          device_training=args.device_training,
                                          device_parameter_server=args.device_parameter_server,
                                          device_inference=args.device_inference,

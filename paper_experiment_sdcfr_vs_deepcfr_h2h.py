@@ -1,6 +1,8 @@
 import argparse
 from PokerRL.eval.head_to_head.H2HArgs import H2HArgs
+from PokerRL.eval.lbr.LBRArgs import LBRArgs
 from PokerRL.game.games import Flop5Holdem
+from PokerRL.game.Poker import Poker
 
 from DeepCFR.EvalAgentDeepCFR import EvalAgentDeepCFR
 from DeepCFR.TrainingProfile import TrainingProfile
@@ -16,15 +18,17 @@ if __name__ == '__main__':
     parser.add_argument("--device-training", default="auto")
     parser.add_argument("--device-parameter-server", default="auto")
     parser.add_argument("--device-inference", default="auto")
+    import os
+    parser.add_argument("--n-workers", type=int,
+                        default=max(1, (len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count() or 1) - 2),
+                        help="Number of parallel LearnerActor subprocesses")
     args = parser.parse_args()
 
     ctrl = Driver(t_prof=TrainingProfile(name="EXPERIMENT_SD-CFR_vs_Deep-CFR_FHP",
 
                                          nn_type="feedforward",  # We also support RNNs, but the paper uses FF
 
-                                         DISTRIBUTED=True,
-                                         CLUSTER=False,
-                                         n_learner_actor_workers=20,  # 20 workers
+                                         n_workers=args.n_workers,
 
                                          # regulate exports
                                          export_each_net=False,
@@ -34,7 +38,7 @@ if __name__ == '__main__':
                                          n_actions_traverser_samples=3,  # = external sampling in FHP
                                          n_traversals_per_iter=15000,
                                          n_batches_adv_training=4000,
-                                         mini_batch_size_adv=512,  # *20=10240
+                                         mini_batch_size_adv=10240,  # *20=10240
                                          init_adv_model="random",
 
                                          use_pre_layers_adv=True,
@@ -61,24 +65,27 @@ if __name__ == '__main__':
 
                                          # With the H2H evaluator, these two are evaluated against eachother.
                                          eval_modes_of_algo=(
-                                             EvalAgentDeepCFR.EVAL_MODE_AVRG_NET, EvalAgentDeepCFR.EVAL_MODE_SINGLE
+                                             EvalAgentDeepCFR.EVAL_MODE_SINGLE,
                                          ),
 
                                          log_verbose=True,
                                          game_cls=Flop5Holdem,
 
                                          # enables simplified obs. Default works also for 3+ players
-                                         use_simplified_headsup_obs=True,
-
-                                         h2h_args=H2HArgs(
-                                             n_hands=1500000,  # this is per seat; so in total 3M hands per eval
+                                         use_simplified_headsup_obs=True,                                         
+                                         lbr_args=LBRArgs(
+                                             n_lbr_hands_per_seat=300000,
+                                             lbr_check_to_round=Poker.FLOP,  # Check/call until FLOP
+                                             n_parallel_lbr_workers=1,  # Local mode, so 1 worker
+                                             use_gpu_for_batch_eval=True,
+                                             DISTRIBUTED=False,
                                          ),
                                          device_training=args.device_training,
                                          device_parameter_server=args.device_parameter_server,
                                          device_inference=args.device_inference,
                                          ),
                   # Evaluate Head-to-Head every 15 iterations of both players (= every 30 alternating iterations)
-                  eval_methods={"h2h": 15},
+                  eval_methods={"lbr": 15},
 
                   # 150 = 300 when 2 viewing alternating iterations as 2 (as usually done).
                   # This repo implements alternating iters as a single iter, which is why this says 150.

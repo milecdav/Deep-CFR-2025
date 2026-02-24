@@ -2,6 +2,7 @@ import os
 import pickle
 
 import psutil
+import torch
 from torch.optim import lr_scheduler
 from torch.utils.tensorboard import SummaryWriter
 
@@ -18,12 +19,8 @@ class ParameterServer(ParameterServerBase):
     def __init__(self, t_prof, owner, chief_ref):
         """Parameter server that may reconstruct the chief actor by name."""
 
-        if isinstance(chief_ref, str):
-            import ray
-
-            chief_handle = ray.get_actor(chief_ref)
-        else:
-            chief_handle = chief_ref
+        # chief_ref is passed directly as an object.
+        chief_handle = chief_ref
 
         super().__init__(t_prof=t_prof, chief_handle=chief_handle)
 
@@ -33,6 +30,7 @@ class ParameterServer(ParameterServerBase):
 
         self._adv_net = self._get_new_adv_net()
         self._adv_optim, self._adv_lr_scheduler = self._get_new_adv_optim()
+        self._adv_criterion = rl_util.str_to_loss_cls(self._adv_args.loss_str)
 
         if self._t_prof.log_verbose:
             log_dir = os.path.join(self._t_prof.path_log_storage, f"PS{owner}")
@@ -51,6 +49,7 @@ class ParameterServer(ParameterServerBase):
             self._avrg_args = t_prof.module_args["avrg_training"]
             self._avrg_net = self._get_new_avrg_net()
             self._avrg_optim, self._avrg_lr_scheduler = self._get_new_avrg_optim()
+            self._avrg_criterion = rl_util.str_to_loss_cls(self._avrg_args.loss_str)
 
     # ______________________________________________ API to pull from PS _______________________________________________
 
@@ -105,6 +104,52 @@ class ParameterServer(ParameterServerBase):
 
     def step_scheduler_avrg(self, loss):
         self._avrg_lr_scheduler.step(loss)
+
+    def train_adv_step(self, batch):
+        """Forward + backward + optimizer step on one raw batch. Returns loss, or None if batch is None."""
+        if batch is None:
+            return None
+        pub_obs, range_idxs, legal_masks, adv, loss_weights = batch
+        pub_obs = pub_obs.to(self._device)
+        range_idxs = range_idxs.to(self._device)
+        legal_masks = legal_masks.to(self._device)
+        adv = adv.to(self._device)
+        loss_weights = loss_weights.to(self._device)
+
+        self._adv_net.train()
+        self._adv_optim.zero_grad()
+        pred = self._adv_net(pub_obses=pub_obs, range_idxs=range_idxs, legal_action_masks=legal_masks)
+        loss = self._adv_criterion(pred, adv, loss_weights.unsqueeze(-1).expand_as(adv))
+        loss.backward()
+        if self._adv_args.grad_norm_clipping is not None:
+            torch.nn.utils.clip_grad_norm_(self._adv_net.parameters(), max_norm=self._adv_args.grad_norm_clipping)
+        self._adv_optim.step()
+        loss_val = loss.item()
+        self._adv_lr_scheduler.step(loss_val)
+        return loss_val
+
+    def train_avrg_step(self, batch):
+        """Forward + backward + optimizer step on one raw avrg batch. Returns loss, or None if batch is None."""
+        if batch is None or not self._AVRG:
+            return None
+        pub_obs, range_idxs, legal_masks, avrg, loss_weights = batch
+        pub_obs = pub_obs.to(self._device)
+        range_idxs = range_idxs.to(self._device)
+        legal_masks = legal_masks.to(self._device)
+        avrg = avrg.to(self._device)
+        loss_weights = loss_weights.to(self._device)
+
+        self._avrg_net.train()
+        self._avrg_optim.zero_grad()
+        pred = self._avrg_net(pub_obses=pub_obs, range_idxs=range_idxs, legal_action_masks=legal_masks)
+        loss = self._avrg_criterion(pred, avrg, loss_weights.unsqueeze(-1).expand_as(avrg))
+        loss.backward()
+        if self._avrg_args.grad_norm_clipping is not None:
+            torch.nn.utils.clip_grad_norm_(self._avrg_net.parameters(), max_norm=self._avrg_args.grad_norm_clipping)
+        self._avrg_optim.step()
+        loss_val = loss.item()
+        self._avrg_lr_scheduler.step(loss_val)
+        return loss_val
 
     # ______________________________________________ API for checkpointing _____________________________________________
     def checkpoint(self, curr_step):

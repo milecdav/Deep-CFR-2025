@@ -276,4 +276,7 @@ $RECYCLE.BIN/
 # data
 /data
 
+# slurm
+slurm_out/
+
 # End of https://www.gitignore.io/api/linux,python,windows,pycharm,pycharm+all,pycharm+iml

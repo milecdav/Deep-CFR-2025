@@ -4,7 +4,15 @@
 import copy
 
 import psutil
+import torch
 from PokerRL.game import bet_sets
+
+
+def _resolve_device(device_str):
+    """Resolve 'auto' to 'cuda' if available, otherwise 'cpu'."""
+    if device_str == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    return device_str
 from PokerRL.game.games import DiscretizedNLLeduc
 from PokerRL.game.wrappers import HistoryEnvBuilder, FlatLimitPokerEnvBuilder
 from PokerRL.rl.MaybeRay import MaybeRay
@@ -25,10 +33,12 @@ class TrainingProfile(TrainingProfileBase):
                  # ------ General
                  name="",
                  log_verbose=True,
+                 print_progress=True,  # Whether to print progress messages like "Generating Data...", "Training Advantage Net...", etc.
                  log_export_freq=1,
                  checkpoint_freq=99999999,
                  eval_agent_export_freq=999999999,
                  n_learner_actor_workers=8,
+                 n_workers=None,  # Alias for n_learner_actor_workers; takes precedence if set
                  max_n_las_sync_simultaneously=10,
                  nn_type="feedforward",  # "recurrent" or "feedforward"
 
@@ -121,6 +131,14 @@ class TrainingProfile(TrainingProfileBase):
                  h2h_args=None,
 
                  ):
+        if n_workers is not None:
+            n_learner_actor_workers = n_workers
+
+        # Resolve "auto" device strings to actual PyTorch device names
+        device_training = _resolve_device(device_training)
+        device_inference = _resolve_device(device_inference)
+        device_parameter_server = _resolve_device(device_parameter_server)
+
         print(" ************************** Initing args for: ", name, "  **************************")
         if object_store_memory is None:
             total_mem = psutil.virtual_memory().total
@@ -189,8 +207,8 @@ class TrainingProfile(TrainingProfileBase):
             eval_stack_sizes=eval_stack_sizes,
 
             DEBUGGING=DEBUGGING,
-            DISTRIBUTED=DISTRIBUTED,
-            CLUSTER=CLUSTER,
+            DISTRIBUTED=False,
+            CLUSTER=False,
             device_inference=device_inference,
 
             module_args={
@@ -257,12 +275,14 @@ class TrainingProfile(TrainingProfileBase):
         self.export_each_net = export_each_net
         self.eval_agent_max_strat_buf_size = eval_agent_max_strat_buf_size
 
-        # Different for dist and local
-        if DISTRIBUTED or CLUSTER:
-            print("Running with ", n_learner_actor_workers, "LearnerActor Workers.")
-            self.n_learner_actors = n_learner_actor_workers
-        else:
-            self.n_learner_actors = 1
+        # Progress printing
+        self.print_progress = print_progress
+
+        # Always use the requested number of LearnerActor workers.
+        # DISTRIBUTED/CLUSTER are ignored; parallelism is handled via
+        # torch.multiprocessing (LAProxy subprocesses).
+        print("Running with ", n_learner_actor_workers, "LearnerActor Workers.")
+        self.n_learner_actors = n_learner_actor_workers
         self.max_n_las_sync_simultaneously = max_n_las_sync_simultaneously
 
         self.device_parameter_server = device_parameter_server

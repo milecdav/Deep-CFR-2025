@@ -10,6 +10,10 @@ if __name__ == '__main__':
     parser.add_argument("--device-training", default="auto")
     parser.add_argument("--device-parameter-server", default="auto")
     parser.add_argument("--device-inference", default="auto")
+    import os
+    parser.add_argument("--n-workers", type=int,
+                        default=max(1, (len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count() or 1) - 2),
+                        help="Number of parallel LearnerActor subprocesses")
     args = parser.parse_args()
 
     ctrl = Driver(t_prof=TrainingProfile(name="SD-CFR_LEDUC_BUF_100",
@@ -38,8 +42,9 @@ if __name__ == '__main__':
                                              EvalAgentDeepCFR.EVAL_MODE_SINGLE,  # SD-CFR
                                          ),
 
-                                         DISTRIBUTED=False,
+
                                          log_verbose=True,
+                                         n_workers=args.n_workers,
                                          device_training=args.device_training,
                                          device_parameter_server=args.device_parameter_server,
                                          device_inference=args.device_inference,

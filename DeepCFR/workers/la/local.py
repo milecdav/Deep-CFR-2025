@@ -61,20 +61,15 @@ class LearnerActor(WorkerBase):
             Configuration object.
         worker_id : int
             Index of this learner.
-        chief_ref : Union[str, ActorHandle]
-            Either a Ray actor handle to the chief (when running locally) or
-            the *name* of the chief actor.  Passing the name allows the worker
-            to reconstruct the handle inside its own process via
-            ``ray.get_actor`` which only requires a primitive string.
+        chief_ref : object or None
+            The chief object (when running in the main process) or ``None``
+            (when running in a LAProxy subprocess, where the LA does not need
+            to call the chief directly).
         """
         super().__init__(t_prof=t_prof)
 
-        if isinstance(chief_ref, str):  # Reconstruct from actor name
-            import ray
-
-            self._chief_handle = ray.get_actor(chief_ref)
-        else:
-            self._chief_handle = chief_ref
+        # chief_ref is passed directly as an object (or None for subprocesses).
+        self._chief_handle = chief_ref
 
         self._adv_args = t_prof.module_args["adv_training"]
 
@@ -200,10 +195,13 @@ class LearnerActor(WorkerBase):
             self._gpu_metrics_available = False
             return 0.0, 0.0
 
-    def generate_data(self, traverser, cfr_iter):
+    def generate_data(self, traverser, cfr_iter, n_traversals=None):
         process = psutil.Process(os.getpid())
         process.cpu_percent()
         t_start = time.perf_counter()
+
+        if n_traversals is None:
+            n_traversals = self._t_prof.n_traversals_per_iter
 
         iteration_strats = [
             IterationStrategy(t_prof=self._t_prof, env_bldr=self._env_bldr, owner=p,
@@ -213,7 +211,7 @@ class LearnerActor(WorkerBase):
         for s in iteration_strats:
             s.load_net_state_dict(state_dict=self._adv_wrappers[s.owner].net_state_dict())
 
-        self._data_sampler.generate(n_traversals=self._t_prof.n_traversals_per_iter,
+        self._data_sampler.generate(n_traversals=n_traversals,
                                     traverser=traverser,
                                     iteration_strats=iteration_strats,
                                     cfr_iter=cfr_iter,
@@ -235,21 +233,29 @@ class LearnerActor(WorkerBase):
         if self._t_prof.log_verbose and m["count"] >= self._perf_log_interval and self._tb_writer is not None:
             avg_time = m["time"] / m["count"]
             avg_cpu = m["cpu"] / m["count"]
-            self._tb_writer.add_scalar("GenerateData/Time", avg_time, m["total"])
-            self._tb_writer.add_scalar("GenerateData/CPU", avg_cpu, m["total"])
-            if self._gpu_device is not None and self._gpu_metrics_available:
-                avg_mem = m["gpu_mem"] / m["count"]
-                avg_util = m["gpu_util"] / m["count"]
-                self._tb_writer.add_scalar("GenerateData/GPUMem", avg_mem, m["total"])
-                self._tb_writer.add_scalar("GenerateData/GPUUtil", avg_util, m["total"])
+            try:
+                self._tb_writer.add_scalar("GenerateData/Time", avg_time, m["total"])
+                self._tb_writer.add_scalar("GenerateData/CPU", avg_cpu, m["total"])
+                if self._gpu_device is not None and self._gpu_metrics_available:
+                    avg_mem = m["gpu_mem"] / m["count"]
+                    avg_util = m["gpu_util"] / m["count"]
+                    self._tb_writer.add_scalar("GenerateData/GPUMem", avg_mem, m["total"])
+                    self._tb_writer.add_scalar("GenerateData/GPUUtil", avg_util, m["total"])
+            except Exception as _tb_err:
+                logging.warning(f"TensorBoard write failed, disabling: {_tb_err}")
+                self._tb_writer = None
             m.update({"time": 0.0, "cpu": 0.0, "gpu_mem": 0.0, "gpu_util": 0.0, "count": 0})
 
         # Log after both players generated data
         if self._t_prof.log_verbose and traverser == 1 and (cfr_iter % 3 == 0) and self._tb_writer is not None:
-            for p in range(self._t_prof.n_seats):
-                self._tb_writer.add_scalar(f"P{p}/ADV_BufSize", self._adv_buffers[p].size, cfr_iter)
-                if self._AVRG:
-                    self._tb_writer.add_scalar(f"P{p}/AVRG_BufSize", self._avrg_buffers[p].size, cfr_iter)
+            try:
+                for p in range(self._t_prof.n_seats):
+                    self._tb_writer.add_scalar(f"P{p}/ADV_BufSize", self._adv_buffers[p].size, cfr_iter)
+                    if self._AVRG:
+                        self._tb_writer.add_scalar(f"P{p}/AVRG_BufSize", self._avrg_buffers[p].size, cfr_iter)
+            except Exception as _tb_err:
+                logging.warning(f"TensorBoard write failed, disabling: {_tb_err}")
+                self._tb_writer = None
 
             process = psutil.Process(os.getpid())
             self._tb_writer.add_scalar("Debug/MemoryUsage/LA", process.memory_info().rss, cfr_iter)
@@ -298,14 +304,34 @@ class LearnerActor(WorkerBase):
         if self._t_prof.log_verbose and m["count"] >= self._perf_log_interval and self._tb_writer is not None:
             avg_time = m["time"] / m["count"]
             avg_cpu = m["cpu"] / m["count"]
-            self._tb_writer.add_scalar("Update/Time", avg_time, m["total"])
-            self._tb_writer.add_scalar("Update/CPU", avg_cpu, m["total"])
-            if self._gpu_device is not None and self._gpu_metrics_available:
-                avg_mem = m["gpu_mem"] / m["count"]
-                avg_util = m["gpu_util"] / m["count"]
-                self._tb_writer.add_scalar("Update/GPUMem", avg_mem, m["total"])
-                self._tb_writer.add_scalar("Update/GPUUtil", avg_util, m["total"])
+            try:
+                self._tb_writer.add_scalar("Update/Time", avg_time, m["total"])
+                self._tb_writer.add_scalar("Update/CPU", avg_cpu, m["total"])
+                if self._gpu_device is not None and self._gpu_metrics_available:
+                    avg_mem = m["gpu_mem"] / m["count"]
+                    avg_util = m["gpu_util"] / m["count"]
+                    self._tb_writer.add_scalar("Update/GPUMem", avg_mem, m["total"])
+                    self._tb_writer.add_scalar("Update/GPUUtil", avg_util, m["total"])
+            except Exception as _tb_err:
+                logging.warning(f"TensorBoard write failed, disabling: {_tb_err}")
+                self._tb_writer = None
             m.update({"time": 0.0, "cpu": 0.0, "gpu_mem": 0.0, "gpu_util": 0.0, "count": 0})
+
+    def get_adv_batch(self, p_id):
+        """Return a raw mini-batch from the adv buffer, or None if buffer is too small."""
+        return self._adv_buffers[p_id].sample(
+            device=self._adv_wrappers[p_id].device,
+            batch_size=self._adv_args.batch_size,
+        )
+
+    def get_avrg_batch(self, p_id):
+        """Return a raw mini-batch from the avrg buffer, or None if buffer is too small."""
+        if not self._AVRG:
+            return None
+        return self._avrg_buffers[p_id].sample(
+            device=self._avrg_wrappers[p_id].device,
+            batch_size=self._avrg_args.batch_size,
+        )
 
     def get_loss_last_batch_adv(self, p_id):
         return self._adv_wrappers[p_id].loss_last_batch
