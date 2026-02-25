@@ -3,11 +3,11 @@
 #SBATCH --output=slurm_out/deep-cfr-flop5-%j.out
 #SBATCH --error=slurm_out/deep-cfr-flop5-%j.err
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=120
-#SBATCH --mem=384G
+#SBATCH --cpus-per-task=64
+#SBATCH --mem=256G
 #SBATCH --gres=gpu:1        # recommended for Flop5Holdem training
 #SBATCH --time=72:00:00
-#SBATCH --partition=h200long
+#SBATCH --partition=amdgpulong
 
 # Adjust module load for your cluster's Python version
 ml Python/3.11.5-GCCcore-13.2.0

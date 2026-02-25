@@ -1,8 +1,6 @@
 import argparse
-from PokerRL.eval.head_to_head.H2HArgs import H2HArgs
-from PokerRL.eval.lbr.LBRArgs import LBRArgs
+from PokerRL.eval.vs_uniform.VsUniformArgs import VsUniformArgs
 from PokerRL.game.games import Flop5Holdem
-from PokerRL.game.Poker import Poker
 
 from DeepCFR.EvalAgentDeepCFR import EvalAgentDeepCFR
 from DeepCFR.TrainingProfile import TrainingProfile
@@ -29,6 +27,7 @@ if __name__ == '__main__':
                                          nn_type="feedforward",  # We also support RNNs, but the paper uses FF
 
                                          n_workers=args.n_workers,
+                                         print_progress=False,
 
                                          # regulate exports
                                          export_each_net=False,
@@ -73,19 +72,16 @@ if __name__ == '__main__':
 
                                          # enables simplified obs. Default works also for 3+ players
                                          use_simplified_headsup_obs=True,                                         
-                                         lbr_args=LBRArgs(
-                                             n_lbr_hands_per_seat=300000,
-                                             lbr_check_to_round=Poker.FLOP,  # Check/call until FLOP
-                                             n_parallel_lbr_workers=args.n_workers,
-                                             use_gpu_for_batch_eval=True,
-                                             DISTRIBUTED=False,
+                                         vs_uniform_args=VsUniformArgs(
+                                             n_hands=300000,
+                                             n_workers=args.n_workers,
                                          ),
                                          device_training=args.device_training,
                                          device_parameter_server=args.device_parameter_server,
                                          device_inference=args.device_inference,
                                          ),
-                  # Evaluate Head-to-Head every 15 iterations of both players (= every 30 alternating iterations)
-                  eval_methods={"lbr": 15},
+                 # Evaluate vs uniform-random every 15 iterations.
+                 eval_methods={"vs_uniform": 15},
 
                   # 150 = 300 when 2 viewing alternating iterations as 2 (as usually done).
                   # This repo implements alternating iters as a single iter, which is why this says 150.

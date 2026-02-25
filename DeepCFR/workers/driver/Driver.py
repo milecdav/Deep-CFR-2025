@@ -117,6 +117,12 @@ class Driver(DriverBase):
                 [EvalAgentDeepCFR.EVAL_MODE_SINGLE, EvalAgentDeepCFR.EVAL_MODE_AVRG_NET],
             )
 
+        if "vs_uniform" in list(eval_methods.keys()):
+            self._ray.remote(
+                self.eval_masters["vs_uniform"][0].set_modes,
+                list(t_prof.eval_modes_of_algo),
+            )
+
         # Create ParameterServers in the main process (no subprocesses).
         print("Creating Parameter Servers...")
         self.ps_handles = [

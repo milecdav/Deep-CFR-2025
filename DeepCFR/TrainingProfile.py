@@ -129,6 +129,7 @@ class TrainingProfile(TrainingProfileBase):
                  lbr_args=None,
                  rl_br_args=None,
                  h2h_args=None,
+                 vs_uniform_args=None,
 
                  ):
         if n_workers is not None:
@@ -257,6 +258,7 @@ class TrainingProfile(TrainingProfileBase):
                 "lbr": lbr_args,
                 "rlbr": rl_br_args,
                 "h2h": h2h_args,
+                "vs_uniform": vs_uniform_args,
             }
         )
         self.path_log_storage = None
