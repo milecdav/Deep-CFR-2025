@@ -160,7 +160,10 @@ class Chief(_ChiefBase):
         ]
 
         def _to_torch(cum_strat_state_dict):
-            cum_strat_state_dict["net"] = self._ray.state_dict_to_numpy(cum_strat_state_dict["net"])
+            net_state = cum_strat_state_dict["net"]
+            if isinstance(net_state, dict) and net_state.get("model_type") == "lightgbm_adv":
+                return cum_strat_state_dict
+            cum_strat_state_dict["net"] = self._ray.state_dict_to_numpy(net_state)
             return cum_strat_state_dict
 
         state_dicts = [
@@ -179,8 +182,22 @@ class Chief(_ChiefBase):
         iter_strat = IterationStrategy(t_prof=self._t_prof, env_bldr=self._env_bldr, owner=owner,
                                          device=self._device_inference, cfr_iter=cfr_iter)
 
-        iter_strat.load_net_state_dict(
-            self._ray.state_dict_to_torch(adv_net_state_dict, device=self._device_inference))
+        # Handle LightGBM state_dict specially (it's already a dict, not a torch state_dict)
+        if isinstance(adv_net_state_dict, dict) and adv_net_state_dict.get("model_type") == "lightgbm_adv":
+            # Verify that the state_dict has all required fields
+            if "boosters" not in adv_net_state_dict:
+                raise ValueError(f"LightGBM state_dict missing 'boosters' field for iteration {cfr_iter}, player {owner}")
+            if len(adv_net_state_dict.get("boosters", [])) != adv_net_state_dict.get("n_actions", 0):
+                raise ValueError(
+                    f"LightGBM state_dict has {len(adv_net_state_dict.get('boosters', []))} boosters "
+                    f"but expects {adv_net_state_dict.get('n_actions', 0)} for iteration {cfr_iter}, player {owner}"
+                )
+            iter_strat.load_net_state_dict(adv_net_state_dict)
+        else:
+            # NN model - convert numpy to torch
+            iter_strat.load_net_state_dict(
+                self._ray.state_dict_to_torch(adv_net_state_dict, device=self._device_inference)
+            )
         self._strategy_buffers[iter_strat.owner].add(iteration_strat=iter_strat)
 
         #  Store to disk

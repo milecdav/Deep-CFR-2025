@@ -11,7 +11,7 @@ from torch.utils.tensorboard import SummaryWriter
 from DeepCFR.IterationStrategy import IterationStrategy
 from DeepCFR.EvalAgentDeepCFR import EvalAgentDeepCFR
 from DeepCFR.workers.la.buffers.AdvReservoirBuffer import AdvReservoirBuffer
-from DeepCFR.workers.la.AdvWrapper import AdvWrapper
+from DeepCFR.workers.la.AdvWrapper import AdvWrapper, LightGBMAdvWrapper
 from DeepCFR.workers.la.buffers.AvrgReservoirBuffer import AvrgReservoirBuffer
 from DeepCFR.workers.la.AvrgWrapper import AvrgWrapper
 from DeepCFR.workers.la.sampling_algorithms.MultiOutcomeSampler import MultiOutcomeSampler
@@ -72,6 +72,7 @@ class LearnerActor(WorkerBase):
         self._chief_handle = chief_ref
 
         self._adv_args = t_prof.module_args["adv_training"]
+        self._adv_model_type = self._adv_args.adv_model_type
 
         self._env_bldr = rl_util.get_env_builder(t_prof=t_prof)
         self._id = worker_id
@@ -86,11 +87,14 @@ class LearnerActor(WorkerBase):
             for p in range(self._t_prof.n_seats)
         ]
 
+        adv_wrapper_cls = AdvWrapper if self._adv_model_type == "nn" else LightGBMAdvWrapper
         self._adv_wrappers = [
-            AdvWrapper(owner=p,
-                       env_bldr=self._env_bldr,
-                       adv_training_args=self._adv_args,
-                       device=self._adv_device)
+            adv_wrapper_cls(
+                owner=p,
+                env_bldr=self._env_bldr,
+                adv_training_args=self._adv_args,
+                device=self._adv_device,
+            )
             for p in range(self._t_prof.n_seats)
         ]
 
@@ -279,9 +283,12 @@ class LearnerActor(WorkerBase):
 
         for p_id in range(self._t_prof.n_seats):
             if adv_state_dicts[p_id] is not None:
-                self._adv_wrappers[p_id].load_net_state_dict(
-                    state_dict=self._ray.state_dict_to_torch(self._ray.get(adv_state_dicts[p_id]),
-                                                             device=self._adv_wrappers[p_id].device))
+                adv_state = self._ray.get(adv_state_dicts[p_id])
+                if self._adv_model_type == "nn":
+                    adv_state = self._ray.state_dict_to_torch(
+                        adv_state, device=self._adv_wrappers[p_id].device
+                    )
+                self._adv_wrappers[p_id].load_net_state_dict(state_dict=adv_state)
 
             if avrg_state_dicts[p_id] is not None:
                 self._avrg_wrappers[p_id].load_net_state_dict(
@@ -322,6 +329,18 @@ class LearnerActor(WorkerBase):
         return self._adv_buffers[p_id].sample(
             device=self._adv_wrappers[p_id].device,
             batch_size=self._adv_args.batch_size,
+        )
+
+    def get_adv_all_data(self, p_id, max_samples=None):
+        """Return all data from the adv buffer (or up to max_samples) for LightGBM training.
+        This bypasses batch fetching and returns all data at once.
+        
+        Returns:
+            tuple: (pub_obs, range_idxs, legal_action_masks, adv, loss_weights) or None if buffer is empty
+        """
+        return self._adv_buffers[p_id].get_all_data(
+            max_samples=max_samples,
+            device=torch.device("cpu"),  # LightGBM works on CPU, so no need to move to GPU
         )
 
     def get_avrg_batch(self, p_id):

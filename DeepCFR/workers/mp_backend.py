@@ -137,6 +137,10 @@ class LAProxy:
     def get_adv_batch(self, p_id):
         return self._call("get_adv_batch", p_id)
 
+    def get_adv_all_data(self, p_id, max_samples=None):
+        """Return all data from the adv buffer (or up to max_samples) for LightGBM training."""
+        return self._call("get_adv_all_data", p_id, max_samples)
+
     def get_avrg_batch(self, p_id):
         return self._call("get_avrg_batch", p_id)
 

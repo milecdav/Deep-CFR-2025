@@ -7,6 +7,7 @@ from torch.nn import functional as F
 
 from PokerRL.rl import rl_util
 from PokerRL.rl.neural.DuelingQNet import DuelingQNet
+from DeepCFR.lightgbm_adv import LightGBMAdvModel
 
 
 class IterationStrategy:
@@ -19,6 +20,7 @@ class IterationStrategy:
         self._cfr_iter = cfr_iter
 
         self._adv_net = None
+        self._adv_model_type = self._t_prof.module_args["adv_training"].adv_model_type
         self._all_range_idxs = torch.arange(
             self._env_bldr.rules.RANGE_SIZE, device=self._device, dtype=torch.long
         )
@@ -72,15 +74,20 @@ class IterationStrategy:
                     range_idxs, dtype=torch.long, device=self._device
                 )
 
-                advantages = self._adv_net(
+                advantages = self._predict_advantages(
                     pub_obses=pub_obses,
                     range_idxs=range_idxs,
                     legal_action_masks=legal_action_masks,
                 )
 
                 # """"""""""""""""""""
+                masked_advantages = torch.where(
+                    legal_action_masks.bool(),
+                    advantages,
+                    torch.full_like(advantages, fill_value=-10e20),
+                )
                 relu_advantages = F.relu(
-                    advantages, inplace=False
+                    masked_advantages, inplace=False
                 )  # Cause the sum of *positive* regret matters in CFR
                 sum_pos_adv_expanded = (
                     relu_advantages.sum(1).unsqueeze(-1).expand_as(relu_advantages)
@@ -100,8 +107,8 @@ class IterationStrategy:
                 bests = torch.argmax(
                     torch.where(
                         legal_action_masks.bool(),
-                        advantages,
-                        torch.full_like(advantages, fill_value=-10e20),
+                        masked_advantages,
+                        torch.full_like(masked_advantages, fill_value=-10e20),
                     ),
                     dim=1,
                 )
@@ -218,15 +225,20 @@ class IterationStrategy:
                 )
                 legal_action_masks = legal_action_masks.unsqueeze(0).expand(n_hands, -1)
 
-                advantages = self._adv_net(
+                advantages = self._predict_advantages(
                     pub_obses=[pub_obs] * n_hands,
                     range_idxs=range_idxs_tensor,
                     legal_action_masks=legal_action_masks,
                 )
 
                 # """"""""""""""""""""
+                masked_advantages = torch.where(
+                    legal_action_masks.bool(),
+                    advantages,
+                    torch.full_like(advantages, fill_value=-10e20),
+                )
                 relu_advantages = F.relu(
-                    advantages, inplace=False
+                    masked_advantages, inplace=False
                 )  # Cause the sum of *positive* regret matters in CFR
                 sum_pos_adv_expanded = (
                     relu_advantages.sum(1).unsqueeze(-1).expand_as(relu_advantages)
@@ -246,8 +258,8 @@ class IterationStrategy:
                 bests = torch.argmax(
                     torch.where(
                         legal_action_masks.bool(),
-                        advantages,
-                        torch.full_like(advantages, fill_value=-10e20),
+                        masked_advantages,
+                        torch.full_like(masked_advantages, fill_value=-10e20),
                     ),
                     dim=1,
                 )
@@ -296,23 +308,55 @@ class IterationStrategy:
         """This just wraps the net.state_dict() with the option of returning None if net is None"""
         if self._adv_net is None:
             return None
+        if isinstance(self._adv_net, LightGBMAdvModel):
+            return self._adv_net.state_dict()
         return self._adv_net.state_dict()
 
     def load_net_state_dict(self, state_dict):
         if state_dict is None:
             return  # if this happens (should only for iteration 0), this class will return random actions.
         else:
-            self._adv_net = DuelingQNet(
-                q_args=self._t_prof.module_args["adv_training"].adv_net_args,
-                env_bldr=self._env_bldr,
-                device=self._device,
-            )
-            self._adv_net.load_state_dict(state_dict)
-            self._adv_net.to(self._device)
+            if isinstance(state_dict, dict) and state_dict.get("model_type") == LightGBMAdvModel.MODEL_TYPE:
+                self._adv_net = LightGBMAdvModel.from_state_dict(state_dict)
+            else:
+                self._adv_net = DuelingQNet(
+                    q_args=self._t_prof.module_args["adv_training"].adv_net_args,
+                    env_bldr=self._env_bldr,
+                    device=self._device,
+                )
+                self._adv_net.load_state_dict(state_dict)
+                self._adv_net.to(self._device)
+                self._adv_net.eval()
+                for param in self._adv_net.parameters():
+                    param.requires_grad = False
 
-        self._adv_net.eval()
-        for param in self._adv_net.parameters():
-            param.requires_grad = False
+    def _predict_advantages(self, pub_obses, range_idxs, legal_action_masks):
+        if isinstance(self._adv_net, LightGBMAdvModel):
+            # Get raw predictions from LightGBM
+            pred_np = self._adv_net.predict(pub_obses=pub_obses, range_idxs=range_idxs)
+            pred = torch.from_numpy(pred_np).to(device=self._device, dtype=torch.float32)
+            
+            # Apply mean-centering to match NN behavior (NN's get_adv() returns mean-centered advantages)
+            # This ensures advantages sum to zero over legal actions, which is required for CFR
+            # First, mask illegal actions to zero for mean computation
+            masked_pred = pred * legal_action_masks
+            
+            # Compute mean over legal actions for each sample
+            # legal_action_masks.sum(dim=1) gives number of legal actions per sample
+            n_legal = legal_action_masks.sum(dim=1, keepdim=True)
+            # Avoid division by zero (shouldn't happen, but safety check)
+            n_legal = torch.clamp(n_legal, min=1.0)
+            mean = (masked_pred.sum(dim=1, keepdim=True) / n_legal).expand_as(pred)
+            
+            # Subtract mean and re-apply mask (mean-centering)
+            centered_pred = (pred - mean) * legal_action_masks
+            
+            return centered_pred
+        return self._adv_net(
+            pub_obses=pub_obses,
+            range_idxs=range_idxs,
+            legal_action_masks=legal_action_masks,
+        )
 
     def get_copy(self, device=None):
         _device = self._device if device is None else device

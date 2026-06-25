@@ -51,6 +51,43 @@ class AdvReservoirBuffer(_ResBufBase):
             self._adv_buffer[indices].to(device), \
             self._iteration_buffer[indices].to(device) / self._last_cfr_iteration_seen
 
+    def get_all_data(self, max_samples=None, device=None):
+        """Get all data from the buffer (or up to max_samples) for LightGBM training.
+        
+        Returns:
+            tuple: (pub_obs, range_idxs, legal_action_masks, adv, loss_weights) or None if buffer is empty
+        """
+        if self.size == 0:
+            return None
+        
+        # Use all data or up to max_samples
+        n_samples = self.size if max_samples is None else min(self.size, max_samples)
+        if n_samples == 0:
+            return None
+        
+        # Get all indices (or random sample if max_samples is specified)
+        if max_samples is not None and max_samples < self.size:
+            indices = torch.randperm(self.size, device=self.device)[:max_samples]
+        else:
+            indices = torch.arange(self.size, dtype=torch.long, device=self.device)
+        
+        if self._nn_type == "recurrent":
+            obses = self._pub_obs_buffer[indices.cpu().numpy()]
+        elif self._nn_type == "feedforward":
+            obses = self._pub_obs_buffer[indices]
+            if device is not None:
+                obses = obses.to(device)
+        else:
+            raise NotImplementedError
+
+        return (
+            obses,
+            self._range_idx_buffer[indices],
+            self._legal_action_mask_buffer[indices],
+            self._adv_buffer[indices],
+            self._iteration_buffer[indices] / self._last_cfr_iteration_seen
+        )
+
     def _add(self, idx, pub_obs, range_idx, legal_action_mask, adv, iteration):
         if self._nn_type == "feedforward":
             pub_obs = torch.from_numpy(pub_obs)

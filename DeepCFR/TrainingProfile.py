@@ -95,6 +95,21 @@ class TrainingProfile(TrainingProfileBase):
                  grad_norm_clipping_adv=10.0,
                  lr_patience_adv=999999999,
                  normalize_last_layer_FLAT_adv=True,
+                 adv_model_type="nn",  # "nn" or "lightgbm"
+                 adv_lgbm_num_boost_round=200,  # Match other repo
+                 adv_lgbm_learning_rate=0.1,  # Match other repo
+                 adv_lgbm_num_leaves=96,  # Moderate increase from 64 (96 < 2^7, preserves leaf-wise growth)
+                 adv_lgbm_min_data_in_leaf=20,  # Match other repo (reduced from 50)
+                 adv_lgbm_feature_fraction=0.8,  # Match other repo
+                 adv_lgbm_bagging_fraction=0.8,  # Match other repo
+                 adv_lgbm_bagging_freq=1,  # Match other repo
+                 adv_lgbm_lambda_l1=0.1,  # Match other repo (added regularization)
+                 adv_lgbm_lambda_l2=0.1,  # Match other repo (reduced from 1.0)
+                 adv_lgbm_max_depth=7,  # Match other repo (set limit instead of unlimited)
+                 adv_lgbm_max_train_samples=300000,
+                 adv_lgbm_verbose=-1,
+                 adv_lgbm_device_type="cpu",  # "cpu", "gpu", or "auto" (auto uses gpu if available)
+                 adv_lgbm_num_threads=None,  # None = use all available cores, or specify number
 
                  max_buffer_size_adv=3e6,
 
@@ -134,6 +149,9 @@ class TrainingProfile(TrainingProfileBase):
                  ):
         if n_workers is not None:
             n_learner_actor_workers = n_workers
+        adv_model_type = str(adv_model_type).lower()
+        if adv_model_type not in ("nn", "lightgbm"):
+            raise ValueError(f"Unknown adv_model_type: {adv_model_type}. Expected 'nn' or 'lightgbm'.")
 
         # Resolve "auto" device strings to actual PyTorch device names
         device_training = _resolve_device(device_training)
@@ -194,6 +212,9 @@ class TrainingProfile(TrainingProfileBase):
         else:
             raise ValueError(nn_type)
 
+        if adv_model_type == "lightgbm" and nn_type != "feedforward":
+            raise ValueError("LightGBM ADV currently supports only nn_type='feedforward'.")
+
         super().__init__(
             name=name,
             log_verbose=log_verbose,
@@ -229,6 +250,21 @@ class TrainingProfile(TrainingProfileBase):
                     device_training=device_training,
                     max_buffer_size=max_buffer_size_adv,
                     lr_patience=lr_patience_adv,
+                    adv_model_type=adv_model_type,
+                    lgbm_num_boost_round=adv_lgbm_num_boost_round,
+                    lgbm_learning_rate=adv_lgbm_learning_rate,
+                    lgbm_num_leaves=adv_lgbm_num_leaves,
+                    lgbm_min_data_in_leaf=adv_lgbm_min_data_in_leaf,
+                    lgbm_feature_fraction=adv_lgbm_feature_fraction,
+                    lgbm_bagging_fraction=adv_lgbm_bagging_fraction,
+                    lgbm_bagging_freq=adv_lgbm_bagging_freq,
+                    lgbm_lambda_l1=adv_lgbm_lambda_l1,
+                    lgbm_lambda_l2=adv_lgbm_lambda_l2,
+                    lgbm_max_depth=adv_lgbm_max_depth,
+                    lgbm_max_train_samples=adv_lgbm_max_train_samples,
+                    lgbm_verbose=adv_lgbm_verbose,
+                    lgbm_device_type=adv_lgbm_device_type,
+                    lgbm_num_threads=adv_lgbm_num_threads,
                 ),
                 "avrg_training": AvrgTrainingArgs(
                     avrg_net_args=AvrgNetArgs(

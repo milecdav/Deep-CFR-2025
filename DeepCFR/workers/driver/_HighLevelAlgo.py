@@ -1,5 +1,5 @@
 import time
-
+import numpy as np
 import torch
 
 from DeepCFR.EvalAgentDeepCFR import EvalAgentDeepCFR
@@ -120,59 +120,121 @@ class HighLevelAlgo(_HighLevelAlgoBase):
         ])
 
         n_workers = len(self._la_handles)
-        n_batches = self._adv_args.n_batches_adv_training
-        SMOOTHING = 200
-        accumulated_averaged_loss = 0.0
-        accumulated_loss_count = 0
-
-        if n_batches == 0:
-            return t_batch_fetch, t_training
-
-        # Pre-dispatch the first batch so it is in-flight before the loop starts.
-        pending_future = self._la_handles[0 % n_workers].get_adv_batch(p_id)
-
-        for epoch_nr in range(n_batches):
-            global_step = cfr_iter * n_batches + epoch_nr
-
-            # Collect the already-dispatched batch (likely ready by now).
+        
+        # For LightGBM, directly get all data from buffers instead of using cached batches
+        # This bypasses the batch fetching loop entirely, avoiding IPC overhead
+        if self._adv_args.adv_model_type != "nn":
+            # LightGBM path: get all data directly from buffers
             t0 = time.time()
-            batch = pending_future.result() if isinstance(pending_future, MPFuture) else pending_future
-            t_batch_fetch += time.time() - t0
-
-            # Pre-dispatch NEXT batch BEFORE training so IPC overlaps with NN compute.
-            if epoch_nr + 1 < n_batches:
-                pending_future = self._la_handles[(epoch_nr + 1) % n_workers].get_adv_batch(p_id)
-
-            if batch is None:
-                continue
-
+            # Collect all data from all LearnerActors in parallel
+            n_workers = len(self._la_handles)
+            max_samples_per_worker = self._adv_args.lgbm_max_train_samples // n_workers if n_workers > 0 else self._adv_args.lgbm_max_train_samples
+            
+            # Get all data from each worker in parallel
+            all_data_futures = [
+                self._ray.remote(self._la_handles[i].get_adv_all_data, p_id, max_samples_per_worker)
+                for i in range(n_workers)
+            ]
+            self._ray.wait(all_data_futures)
+            
+            # Collect and concatenate all data
+            all_data = [self._ray.get(f) for f in all_data_futures]
+            valid_data = [d for d in all_data if d is not None]
+            
+            if len(valid_data) == 0:
+                # No data available, skip training
+                return t_batch_fetch, t_training
+            
+            # Concatenate data from all workers (data is already tensors on CPU)
+            pub_obs = torch.cat([d[0] for d in valid_data], dim=0)
+            range_idxs = torch.cat([d[1] for d in valid_data], dim=0)
+            legal_masks = torch.cat([d[2] for d in valid_data], dim=0)
+            adv = torch.cat([d[3] for d in valid_data], dim=0)
+            loss_weights = torch.cat([d[4] for d in valid_data], dim=0)
+            
+            # Limit to max_samples if needed (before converting to numpy)
+            n_samples = len(pub_obs)
+            if n_samples > self._adv_args.lgbm_max_train_samples:
+                indices = torch.randperm(n_samples, device=pub_obs.device)[:self._adv_args.lgbm_max_train_samples]
+                pub_obs = pub_obs[indices]
+                range_idxs = range_idxs[indices]
+                legal_masks = legal_masks[indices]
+                adv = adv[indices]
+                loss_weights = loss_weights[indices]
+            
+            # Convert to numpy for LightGBM
+            pub_obs_np = pub_obs.cpu().numpy()
+            range_idxs_np = range_idxs.cpu().numpy()
+            legal_masks_np = legal_masks.cpu().numpy()
+            adv_np = adv.cpu().numpy()
+            loss_weights_np = loss_weights.cpu().numpy()
+            
+            t_batch_fetch += time.time() - t0  # Data collection time
+            
+            # Train LightGBM directly with all collected data
             t0 = time.time()
             ps = self._ps_handles[p_id]
-            if ps is None:
+            if ps is not None:
+                loss = self._ray.get(self._ray.remote(
+                    ps.train_adv_direct,
+                    pub_obs_np, range_idxs_np, legal_masks_np, adv_np, loss_weights_np
+                ))
+                t_training += time.time() - t0
+        else:
+            # NN path: fetch batches in loop and train incrementally
+            n_batches = self._adv_args.n_batches_adv_training
+            SMOOTHING = 200
+            accumulated_averaged_loss = 0.0
+            accumulated_loss_count = 0
+
+            if n_batches == 0:
                 return t_batch_fetch, t_training
-            loss = self._ray.get(self._ray.remote(ps.train_adv_step, batch))
-            t_training += time.time() - t0
 
-            if loss is not None:
-                accumulated_averaged_loss += loss
-                accumulated_loss_count += 1
+            # Pre-dispatch the first batch so it is in-flight before the loop starts.
+            pending_future = self._la_handles[0 % n_workers].get_adv_batch(p_id)
 
-            if (
-                self._t_prof.log_verbose
-                and ((epoch_nr + 1) % SMOOTHING == 0)
-                and accumulated_loss_count > 0
-            ):
-                self._ray.wait([
-                    self._ray.remote(
-                        self._chief_handle.add_scalar,
-                        self._exp_adv_loss_handles[p_id],
-                        "DCFR_NN_Losses/Advantage",
-                        global_step,
-                        accumulated_averaged_loss / accumulated_loss_count,
-                    )
-                ])
-                accumulated_averaged_loss = 0.0
-                accumulated_loss_count = 0
+            for epoch_nr in range(n_batches):
+                global_step = cfr_iter * n_batches + epoch_nr
+
+                # Collect the already-dispatched batch (likely ready by now).
+                t0 = time.time()
+                batch = pending_future.result() if isinstance(pending_future, MPFuture) else pending_future
+                t_batch_fetch += time.time() - t0
+
+                # Pre-dispatch NEXT batch BEFORE training so IPC overlaps with NN compute.
+                if epoch_nr + 1 < n_batches:
+                    pending_future = self._la_handles[(epoch_nr + 1) % n_workers].get_adv_batch(p_id)
+
+                if batch is None:
+                    continue
+
+                t0 = time.time()
+                ps = self._ps_handles[p_id]
+                if ps is None:
+                    return t_batch_fetch, t_training
+                loss = self._ray.get(self._ray.remote(ps.train_adv_step, batch))
+                t_training += time.time() - t0
+
+                if loss is not None:
+                    accumulated_averaged_loss += loss
+                    accumulated_loss_count += 1
+
+                if (
+                    self._t_prof.log_verbose
+                    and ((epoch_nr + 1) % SMOOTHING == 0)
+                    and accumulated_loss_count > 0
+                ):
+                    self._ray.wait([
+                        self._ray.remote(
+                            self._chief_handle.add_scalar,
+                            self._exp_adv_loss_handles[p_id],
+                            "DCFR_NN_Losses/Advantage",
+                            global_step,
+                            accumulated_averaged_loss / accumulated_loss_count,
+                        )
+                    ])
+                    accumulated_averaged_loss = 0.0
+                    accumulated_loss_count = 0
 
         return t_batch_fetch, t_training
 
@@ -240,10 +302,17 @@ class HighLevelAlgo(_HighLevelAlgoBase):
         ps = self._ps_handles[p_id]
         if ps is None:
             return
+        # Get the state_dict first (wait for it to complete)
+        # This ensures LightGBM state_dict (which contains strings) is properly retrieved
+        adv_weights_future = self._ray.remote(ps.get_adv_weights)
+        self._ray.wait([adv_weights_future])
+        adv_weights = self._ray.get(adv_weights_future)
+        
+        # Now pass the retrieved state_dict to Chief
         self._ray.wait([self._ray.remote(
             self._chief_handle.add_new_iteration_strategy_model,
             p_id,
-            self._ray.remote(ps.get_adv_weights),
+            adv_weights,
             cfr_iter,
         )])
 

@@ -332,7 +332,9 @@ class EvalAgentDeepCFR(_EvalAgentBase):
 
             for p in range(self.t_prof.n_seats):
                 for state in list_of_new_iter_strat_state_dicts[p]:
-                    state["net"] = self.ray.state_dict_to_torch(state["net"], device=self.device)
+                    net_state = state["net"]
+                    if not (isinstance(net_state, dict) and net_state.get("model_type") == "lightgbm_adv"):
+                        state["net"] = self.ray.state_dict_to_torch(net_state, device=self.device)
 
                     _iter_strat = IterationStrategy.build_from_state_dict(state=state, t_prof=self.t_prof,
                                                                           env_bldr=self.env_bldr,

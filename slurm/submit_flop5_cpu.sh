@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=deep-cfr-flop5-cpu
 #SBATCH --output=slurm_out/deep-cfr-flop5-cpu-%j.out
-#SBATCH --error=slurm_out/deep-cfr-flop5-cpu-%j.err
+#SBATCH --error=slurm_out/deep-cfr-flop5-cpu-%j.out
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=48
-#SBATCH --mem=128G
+#SBATCH --cpus-per-task=64
+#SBATCH --mem=256G
 #SBATCH --time=72:00:00
 #SBATCH --partition=amdlong
 
@@ -19,4 +19,11 @@ export MKL_NUM_THREADS=1
 N_WORKERS=$((${SLURM_CPUS_PER_TASK:-16} - 2))
 if [ "$N_WORKERS" -lt 1 ]; then N_WORKERS=1; fi
 
+# Accept run-id from environment variable or command line argument
+RUN_ID=${RUN_ID:-${1:-}}
+
+if [ -n "$RUN_ID" ]; then
+    python -u paper_experiment_sdcfr_vs_deepcfr_h2h.py --n-workers "$N_WORKERS" --device-training cpu --device-parameter-server cpu --device-inference cpu --run-id "$RUN_ID"
+else
 python -u paper_experiment_sdcfr_vs_deepcfr_h2h.py --n-workers "$N_WORKERS" --device-training cpu --device-parameter-server cpu --device-inference cpu
+fi

@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=deep-cfr-flop5
-#SBATCH --output=slurm_out/deep-cfr-flop5-%j.out
-#SBATCH --error=slurm_out/deep-cfr-flop5-%j.out
+#SBATCH --job-name=deep-cfr-flop5-nn-large
+#SBATCH --output=slurm_out/deep-cfr-flop5-nn-large-%j.out
+#SBATCH --error=slurm_out/deep-cfr-flop5-nn-large-%j.out
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
 #SBATCH --mem=256G
@@ -24,7 +24,7 @@ if [ "$N_WORKERS" -lt 1 ]; then N_WORKERS=1; fi
 RUN_ID=${RUN_ID:-${1:-}}
 
 if [ -n "$RUN_ID" ]; then
-    python -u paper_experiment_sdcfr_vs_deepcfr_h2h.py --n-workers "$N_WORKERS" --device-training cpu --device-parameter-server cuda:0 --device-inference cpu --run-id "$RUN_ID"
+    python -u paper_experiment_sdcfr_vs_deepcfr_h2h.py --n-workers "$N_WORKERS" --device-training cpu --device-parameter-server cuda:0 --device-inference cpu --adv-model-type nn --nn-size large --run-id "$RUN_ID"
 else
-python -u paper_experiment_sdcfr_vs_deepcfr_h2h.py --n-workers "$N_WORKERS" --device-training cpu --device-parameter-server cuda:0 --device-inference cpu
+    python -u paper_experiment_sdcfr_vs_deepcfr_h2h.py --n-workers "$N_WORKERS" --device-training cpu --device-parameter-server cuda:0 --device-inference cpu --adv-model-type nn --nn-size large
 fi

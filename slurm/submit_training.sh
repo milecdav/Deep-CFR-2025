@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=deep-cfr
 #SBATCH --output=slurm_out/deep-cfr-%j.out
-#SBATCH --error=slurm_out/deep-cfr-%j.err
+#SBATCH --error=slurm_out/deep-cfr-%j.out
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G

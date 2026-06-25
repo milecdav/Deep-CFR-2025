@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=deep-cfr-leduc
 #SBATCH --output=slurm_out/deep-cfr-leduc-%j.out
-#SBATCH --error=slurm_out/deep-cfr-leduc-%j.err
+#SBATCH --error=slurm_out/deep-cfr-leduc-%j.out
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
