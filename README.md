@@ -1,4 +1,5 @@
 # Deep CFR & Single Deep CFR
+
 A scalable implementation of [Deep CFR](https://arxiv.org/pdf/1811.00164.pdf) [1] and its successor
 [Single Deep CFR (SD-CFR)](https://arxiv.org/pdf/1901.07621.pdf) [2] in the
 [PokerRL-2025](https://github.com/theGholland/PokerRL-2025) framework.
@@ -7,9 +8,163 @@ This codebase is designed for:
 - Researchers to compare new methods to these baselines.
 - Anyone wanting to learn about Deep RL in imperfect information games.
 
-This implementation seamlessly be runs on your local machine and on hundreds of cores on AWS.
+This implementation can be run on your local machine and on hundreds of cores on AWS or SLURM clusters.
 
-### Fork-specific notes
+## About this fork
+
+This repository is based on the original [Deep-CFR](https://github.com/TinkeringCode/Deep-CFR) implementation by Eric Steinberger, extended for our experiments comparing **neural-network** and **LightGBM** advantage approximators in SD-CFR on **Flop5Holdem** and **Leduc**.
+
+Main additions over the original repo:
+
+- **LightGBM backend** for the advantage network (`--adv-model-type lightgbm`), with configurable hyperparameters and multi-threaded training.
+- **SLURM scripts** under `slurm/` for training, checkpoint evaluation, and batch H2H matrix jobs.
+- **`evaluate_checkpoint.py`** for head-to-head, vs-uniform, and LBR evaluation of saved checkpoints.
+- **Analysis scripts** under `scripts/` to aggregate H2H matrix results and plot learning curves.
+- **Automatic resource detection**, timestamped TensorBoard logging, GPU device flags, and per-actor performance stats (see fork notes below).
+
+Checkpoints and logs are written under `~/poker_ai_data/` by default (eval agents, training logs, TensorBoard).
+
+---
+
+## Our experiments and results
+
+We ran SD-CFR (SINGLE mode, random initialization) on **Flop5Holdem** with two advantage backends:
+
+| Backend | Script / config | Notes |
+|--------|------------------|--------|
+| **NN (medium)** | `slurm/submit_flop5.sh` | Feedforward MLP on GPU parameter server |
+| **NN (small / large)** | `submit_flop5_nn_small.sh`, `submit_flop5_nn_large.sh` | ~2× smaller / larger networks |
+| **LightGBM (CPU)** | `slurm/submit_flop5_lightgbm_cpu.sh` | Gradient-boosted trees for advantages |
+
+Each configuration was trained with **multiple independent seeds** (`--run-id 0–4` or higher), producing experiment names like `EXPERIMENT_SD-CFR_vs_Deep-CFR_FHP_NN_run0` and `EXPERIMENT_SD-CFR_vs_Deep-CFR_FHP_LightGBM_run5`.
+
+### Head-to-head evaluation (Flop5Holdem)
+
+After training, we evaluated checkpoints **head-to-head** (2M hands per seat) in a full matrix: every LGBM run vs every NN run at each iteration. Results are summarized in `slurm_out/<experiment_dir>/`:
+
+- **`h2h-matrix-*.out`** — raw SLURM output per iteration (25 pairwise results + summary table).
+- **`h2h_aggregated.json`** — per-iteration averages (total, per LGBM run, and all 25 pairs).
+- **`h2h_plot.png`** — learning curve (LGBM perspective; positive = LGBM ahead).
+
+Example findings from our runs (5×5 matrix, iteration 149):
+
+| Setting | Total average (LGBM vs NN) |
+|--------|----------------------------|
+| Larger LightGBM budget (`slurm_out/big_lgbm/`) | ~**+268** MBB/G |
+| Smaller LightGBM budget (`slurm_out/small_lgbm/`) | ~**+121** MBB/G |
+
+Both configs show LGBM ahead on average at late iterations, with substantial run-to-run variance across the 25 pairings. Early iterations (especially iteration 0) are not meaningful for comparison — agents are essentially untrained. NN training is much faster per iteration; LightGBM iterations can take several minutes once buffers fill.
+
+Comparison plots (e.g. two LGBM configs on one figure) are produced with `scripts/plot_h2h_results_compare.py`.
+
+### Leduc exploitability
+
+On **Leduc**, we compared NN vs LightGBM exploitability using `paper_experiment_leduc_exploitability_comparison.py` and `slurm/submit_leduc_*.sh`. LightGBM can reach lower exploitability early; NN often catches up at later iterations. See `slurm_out/leduc/` for job outputs.
+
+---
+
+## Reproducing our results
+
+### 1. Setup
+
+```bash
+pip install -r requirements.txt
+pip install .   # optional: install DeepCFR package
+```
+
+Training and evaluation expect checkpoints under `~/poker_ai_data/`. Activate your Python environment and adjust module loads in the SLURM scripts for your cluster.
+
+### 2. Training (SLURM)
+
+From the project root:
+
+```bash
+# Single NN run (medium network, run-id 0)
+sbatch slurm/submit_flop5.sh 0
+
+# Single LightGBM CPU run
+sbatch slurm/submit_flop5_lightgbm_cpu.sh 5
+
+# Submit multiple runs (edit scripts for run-id ranges)
+python slurm/submit_all_runs.py
+```
+
+Local (non-SLURM) equivalent:
+
+```bash
+python paper_experiment_sdcfr_vs_deepcfr_h2h.py \
+  --adv-model-type nn --run-id 0 --n-workers 62
+
+python paper_experiment_sdcfr_vs_deepcfr_h2h.py \
+  --adv-model-type lightgbm --adv-lgbm-device-type cpu --run-id 5 --n-workers 62
+```
+
+Monitor training: `tensorboard --logdir ~/poker_ai_data/logs`
+
+### 3. Head-to-head evaluation (SLURM)
+
+Edit experiment lists in `slurm/submit_evaluate_checkpoints_matrix.sh`, then:
+
+```bash
+# One job, one iteration
+./slurm/submit_evaluate_checkpoints_matrix.sh
+
+# One job per iteration (0, 5, 10, …, 145)
+./slurm/submit_evaluate_checkpoints_matrix.sh --iter-range 0 145 5
+```
+
+Or evaluate a single pair locally:
+
+```bash
+python evaluate_checkpoint.py --mode h2h \
+  --experiment1 EXPERIMENT_SD-CFR_vs_Deep-CFR_FHP_LightGBM_run5 \
+  --experiment2 EXPERIMENT_SD-CFR_vs_Deep-CFR_FHP_NN_run0 \
+  --iteration1 149 --iteration2 149 \
+  --n-hands 2000000 --n-workers 22
+```
+
+Use `--iteration1 0 --iteration2 0` to compare initialized (untrained) agents.
+
+### 4. Aggregate and plot H2H results
+
+```bash
+# Aggregate all h2h-matrix-*.out files in a directory
+python scripts/aggregate_h2h_results.py slurm_out/big_lgbm
+
+# Single learning curve
+python scripts/plot_h2h_results.py slurm_out/big_lgbm/h2h_aggregated.json
+
+# Compare two conditions on one plot
+python scripts/plot_h2h_results_compare.py \
+  slurm_out/big_lgbm/h2h_aggregated.json "Equal data" \
+  slurm_out/small_lgbm/h2h_aggregated.json "Equal time" \
+  -o slurm_out/h2h_compare.png
+
+# Optional: plot all 25 pairwise series
+python scripts/plot_h2h_results_compare.py ... --plot-all-pairs
+```
+
+### 5. Job resource report (SLURM)
+
+On the cluster, summarize wall-clock time and memory per training job:
+
+```bash
+bash scripts/slurm_seff_report.sh
+# → slurm_out/slurm_seff_report.txt
+```
+
+### 6. Leduc exploitability
+
+```bash
+sbatch slurm/submit_leduc_nn.sh
+sbatch slurm/submit_leduc_lgbm.sh
+# or
+sbatch slurm/submit_leduc_both.sh
+```
+
+---
+
+### Fork-specific notes (original README)
 
 - **Automatic resource detection**: This fork probes available CPU cores, GPUs, and memory to size
   Ray actors and adjust batch sizes without manual configuration.
